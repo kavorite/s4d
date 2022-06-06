@@ -1,7 +1,6 @@
 import warnings
 
 import haiku as hk
-import jax
 import jax.numpy as jnp
 from einops import rearrange, repeat
 from haiku.initializers import RandomNormal, RandomUniform

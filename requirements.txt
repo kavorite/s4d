@@ -1,0 +1,5 @@
+dm-haiku
+black
+einops
+jax
+-e .

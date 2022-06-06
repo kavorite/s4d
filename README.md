@@ -1,0 +1,6 @@
+This repository contains a minimal [haiku] implementation of **S**equence **S**tructured **S**tate **S**pace models ([S4]). These models are useful for sequence transduction, competitive with transformers, but their novel parametrization makes them more compact compared to attention-based architectures, as the space required for adequate intermediate representational capacity scales _linearly,_ rather than quadratically, with respect to the sequence length they expect to encounter. 
+
+These models take a principled approach to LRDs, and are theoretically capable of representing such dependencies over arbitary sequence lengths. Empirically they perform well for sequence lengths of up to several thousand steps on a variety of discrete timescales. They also operate an order of magnitude faster than their attention-based counterparts during autoregressive inference in a fraction of the space required for a full transformer forward pass, which makes them much cheaper at inference-time for generative tasks. See [examples](examples/) for a worked example of how to instantiate a simple S4 transformer using the API.
+
+[s4]: https://github.com/HazyResearch/state-spaces
+[haiku]: https://github.com/deepmind/haiku

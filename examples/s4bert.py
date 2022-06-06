@@ -1,6 +1,6 @@
 """
 This example creates a simple, lightweight sequence transduction model backbone
-by stacking S4 blocks in a manner not dissimilar from an encoder-only
+by stacking S4D blocks in a manner not dissimilar from an encoder-only
 transformer such as BERT-- then runs a forward pass with the resulting model.
 
 This implementation omits the embedding table and tokenization typical of
@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax.random import PRNGKey
-from s4d.model import S4D
+from s4d import S4D
 
 
 @hk.without_apply_rng
@@ -39,7 +39,7 @@ def model(u, state=None, is_training=True):
 
     def residual_block():
         s4d = S4D(H, n_ssm=H, channels=A)
-        ffn = hk.nets.MLP([H, H], act=jax.nn.silu)
+        ffn = hk.nets.MLP([H, H], activation=jax.nn.silu)
 
         return [
             set_v,
