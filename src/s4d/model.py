@@ -1,3 +1,4 @@
+"dm-haiku port of https://github.com/HazyResearch/state-spaces/blob/main/src/models/sequence/ss/standalone/s4d.py"
 import warnings
 
 import haiku as hk
