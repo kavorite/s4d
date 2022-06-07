@@ -17,58 +17,27 @@ TODO(kavorite): implement multi-scale hierarchical architecture
 """
 
 import haiku as hk
-import jax
 import jax.numpy as jnp
-from einops import rearrange
 from jax.random import PRNGKey
-from s4d import S4D
+from s4d import S4DEncoder
 
 
 @hk.without_apply_rng
 @hk.transform
-def model(u, state=None, is_training=True):
+def model(u, state=None, **kwargs):
     A, L, H = 4, 12, 256  # electra-small-decoder configuration
     d = u.shape[-1]
     u = hk.Linear(H)(u)
-    v = None
+    layers = [S4DEncoder(H, A) for _ in range(L)]
+    cnn = hk.Sequential(layers)
+    rnn = hk.DeepRNN(layers)
 
-    def set_v(u):
-        nonlocal v
-        v = u.copy()
-        return u
-
-    def residual_block():
-        s4d = S4D(H, n_ssm=H, channels=A)
-        ffn = hk.nets.MLP([H, H], activation=jax.nn.silu)
-
-        return [
-            set_v,
-            s4d.convolutional() if is_training else s4d.recurrent(),
-            lambda u: (
-                rearrange(u, "... h l d -> ... l (h d)")
-                if is_training
-                else rearrange(u, "... h d -> ...(h d)")
-            ),
-            hk.LayerNorm(-1, True, True),
-            ffn,
-            lambda u: u + v,
-            jax.nn.silu,
-        ]
-
-    layers = sum((residual_block() for _ in range(L)), [])
-    if is_training:
-        for f in layers:
-            u = f(u)
+    if state is None:
+        v = cnn(u)
     else:
-        core = hk.DeepRNN(layers)
-        if state is None:
-            state = core.initial_state(batch_size=u.shape[0])
-            u, state = hk.dynamic_unroll(core, u, state, time_major=False)
-        else:
-            u, state = core(u, state)
-
-    u = hk.Linear(d)(u)
-    return u if is_training else (u, state)
+        v, state = hk.dynamic_unroll(rnn, u, state, **kwargs)
+    y = hk.Linear(d)(v)
+    return y if state is None else (y, state)
 
 
 u = jnp.zeros((1, 512, 256))  # (B N D)

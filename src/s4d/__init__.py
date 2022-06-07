@@ -1,1 +1,1 @@
-from .model import S4D
+from .model import S4D, S4DEncoder

@@ -2,6 +2,7 @@
 import warnings
 
 import haiku as hk
+import jax
 import jax.numpy as jnp
 from einops import rearrange, repeat
 from haiku.initializers import RandomNormal, RandomUniform
@@ -20,10 +21,10 @@ class S4DCore(hk.RNNCore):
         return jnp.zeros(shape + self.dB.shape, dtype=self.dC.dtype)
 
     def __call__(self, u, state):
-        v = jnp.einsum("h n, b h n -> b h n", self.dA, state)
-        z = jnp.einsum("h n, b h -> b h", self.dB, u)
+        v = jnp.einsum("h n, ... h n -> ... h n", self.dA, state)
+        z = jnp.einsum("h n, ... h -> ... h", self.dB, u)
         state = v + z[..., None]
-        y = jnp.einsum("c h n, b h n -> b c h", self.dC, state)
+        y = jnp.einsum("c h n, ... h n -> c h", self.dC, state)
         y = y + u[..., None, :] * self.D
         return 2 * y.real, state
 
@@ -38,7 +39,7 @@ class S4DConv(hk.Module):
         self.channels = channels
 
     def _kernel(self, l=1):
-        h = self.log_dt.shape[-1]
+        h = self.dt.shape[-1]
         k = h // self.w.shape[0]
         w = repeat(self.w, "t n -> (v t) n", v=k)
         C = self.C + 0j
@@ -55,10 +56,10 @@ class S4DConv(hk.Module):
         k = self._kernel(l=l)
         k_f = jnp.fft.rfft(k, n=2 * l - 1)
         u_f = jnp.fft.rfft(u, n=2 * l - 1)
-        y_f = jnp.einsum("b h l, c h l -> bchl", u_f, k_f)
+        y_f = jnp.einsum("... h l, c h l -> ... c h l", u_f, k_f)
         y = jnp.fft.irfft(y_f, n=2 * l)[..., :l]
-        y = y + jnp.einsum("b h l, c h -> b c h l", u, self.D)
-        return y.swapaxes(-1, -2)
+        y = y + jnp.einsum("... h l, c h -> ... c h l", u, self.D)
+        return rearrange(y, "... c h l -> ... l c h")
 
 
 class S4D(hk.Module):
@@ -141,3 +142,34 @@ class S4D(hk.Module):
             return self.convolutional(timescale)(u)
         else:
             return self.recurrent(timescale)(u, state)
+
+
+class S4DEncoder(hk.RNNCore):
+    def __init__(
+        self,
+        hidden_dim,
+        num_heads,
+        activation=jax.nn.silu,
+        name=None,
+    ):
+        super().__init__(name=name)
+        H, A = hidden_dim, num_heads
+        self.s4d = S4D(H, n_ssm=H, channels=A)
+        self.nrm = hk.LayerNorm(-1, True, True)
+        self.pt1 = hk.Linear(hidden_dim)
+        self.pt2 = hk.Linear(hidden_dim)
+        self.act = activation
+
+    def initial_state(self, batch_size=None):
+        return self.s4d.recurrent().initial_state(batch_size)
+
+    def __call__(self, u, state=None, timescale=1.0):
+        if state is None:
+            v = self.s4d.convolutional(timescale)(u)
+        else:
+            v, state = self.s4d.recurrent(timescale)(u, state)
+
+        v = rearrange(v, "... h d -> ... (h d)")
+        v = self.act(self.pt1(self.nrm(v)))
+        y = self.pt2(u + v)
+        return y if state is None else (y, state)
