@@ -2,6 +2,8 @@ This repository contains a minimal [haiku] implementation of **S**equence **S**t
 
 These models take a principled approach to long-range dependencies, and are theoretically capable of representing such dependencies over arbitary sequence lengths. Empirically they perform well for sequence lengths of up to several thousand steps on a variety of discrete timescales. They also operate an order of magnitude faster than their attention-based counterparts during autoregressive inference in a fraction of the space required for a forward pass over an entire sequence, which makes them much cheaper at inference-time for generative tasks. See [s4dbert.py](examples/s4dbert.py) for a worked example of how to instantiate a simple S4 transformer using the API.
 
+> i came _this_ 🤌 close to renaming the repository `decepticon` while proofreading the README because of how hard it dunks on baseline transformers. i have to be reconciled to that information _and now so do you._ thank you warren for the suggestion.
+
 [s4]: https://github.com/HazyResearch/state-spaces
 [s4d]: https://github.com/HazyResearch/state-spaces/blob/6cbc09aeeebfe72b7bde7897ef157cf63fd12721/src/models/sequence/ss/standalone/s4d.py
 [haiku]: https://github.com/deepmind/haiku
