@@ -91,7 +91,7 @@ class S4D(hk.Module):
     @hk.transparent
     def _B(self):
         B = hk.get_parameter(
-            "B_logits",
+            "B",
             (self.n_ssm, self.n // 2),
             init=RandomNormal(),
             dtype=jnp.complex64,
@@ -117,7 +117,7 @@ class S4D(hk.Module):
         ceil = jnp.log(self.dt_max)
         log_dt = (
             hk.get_parameter(
-                "dt_logits",
+                "log_dt",
                 (self.h,),
                 init=RandomUniform(self.dt_min, self.dt_max),
             )
