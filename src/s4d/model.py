@@ -171,5 +171,5 @@ class S4DEncoder(hk.RNNCore):
 
         v = rearrange(v, "... h d -> ... (h d)")
         v = self.act(self.pt1(self.nrm(v)))
-        y = self.pt2(u + v)
+        y = self.act(self.pt2(u + v))
         return y if state is None else (y, state)
