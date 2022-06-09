@@ -1,5 +1,6 @@
 "dm-haiku port of https://github.com/HazyResearch/state-spaces/blob/main/src/models/sequence/ss/standalone/s4d.py"
 import warnings
+from functools import partial
 
 import haiku as hk
 import jax
@@ -126,7 +127,7 @@ class S4D(hk.Module):
         )
         return jnp.exp(log_dt) * timescale
 
-    def recurrent(self, timescale=1.0):
+    def rnn(self, timescale=1.0):
         dtA = self._w() * self._dt(timescale)[..., None]
         dA = jnp.exp(dtA)
         dC = self._C() * (jnp.exp(dtA - 1.0) / self._w())
@@ -134,14 +135,39 @@ class S4D(hk.Module):
 
         return S4DCore(dA, dB, dC, self.D)
 
-    def convolutional(self, timescale=1.0):
+    def cnn(self, timescale=1.0):
         return S4DConv(self._w(), self._C(), self.D, self._dt(timescale), self.channels)
 
     def __call__(self, u, timescale=1.0, state=None):
         if state is None:
-            return self.convolutional(timescale)(u)
+            return self.cnn(timescale)(u)
         else:
-            return self.recurrent(timescale)(u, state)
+            return self.rnn(timescale)(u, state)
+
+
+class DeepS4DNN(hk.Module):
+    def __init__(self, layers, name=None):
+        super().__init__(name=name)
+        self.layers = layers
+
+    def rnn(self, timescale=1.0):
+        return hk.DeepRNN(
+            [partial(layer, timescale=timescale) for layer in self.layers]
+        )
+
+    def cnn(self, timescale=1.0):
+        return hk.Sequential(
+            [partial(layer, timescale=timescale) for layer in self.layers]
+        )
+
+    def initial_state(self, batch_size=None):
+        return self.rnn().initial_state(batch_size)
+
+    def __call__(self, u, state=None, timescale=1.0):
+        if state is not None:
+            return self.rnn(timescale)(u, state)
+        else:
+            return self.cnn(timescale)(u)
 
 
 class S4DEncoder(hk.RNNCore):
@@ -156,20 +182,21 @@ class S4DEncoder(hk.RNNCore):
         H, A = hidden_dim, num_heads
         self.s4d = S4D(H, n_ssm=H, channels=A)
         self.nrm = hk.LayerNorm(-1, True, True)
-        self.pt1 = hk.Linear(hidden_dim)
-        self.pt2 = hk.Linear(hidden_dim)
+        self.ffn = hk.nets.MLP([H * A, H], activation=activation)
         self.act = activation
 
     def initial_state(self, batch_size=None):
-        return self.s4d.recurrent().initial_state(batch_size)
+        return self.s4d.rnn().initial_state(batch_size)
 
-    def __call__(self, u, state=None, timescale=1.0):
+    def __call__(self, u, state=None, timescale=1.0, dropout=None):
         if state is None:
-            v = self.s4d.convolutional(timescale)(u)
+            v = self.s4d.cnn(timescale)(u)
         else:
-            v, state = self.s4d.recurrent(timescale)(u, state)
+            v, state = self.s4d.rnn(timescale)(u, state)
 
-        v = rearrange(v, "... h d -> ... (h d)")
-        v = self.act(self.pt1(self.nrm(v)))
-        y = self.act(self.pt2(u + v))
+        if dropout is not None:
+            v = hk.dropout(hk.next_rng_key(), dropout, v)
+        u = rearrange(u, "... d -> ... () d")
+        v = self.nrm(rearrange(u + v, "... h d -> ... (h d)"))
+        y = self.act(self.ffn(v, dropout, dropout and hk.maybe_next_rng_key()))
         return y if state is None else (y, state)
