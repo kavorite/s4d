@@ -17,34 +17,28 @@ TODO(kavorite): implement multi-scale hierarchical architecture
 """
 
 import haiku as hk
+import jax
 import jax.numpy as jnp
-from jax.random import PRNGKey
-from s4d import S4DEncoder
-
-
-class S4DMLM(hk.Module):
-    def __init__(self, A, L, H, name=None):
-        super().__init__(name=name)
-        layers = [S4DEncoder(H, A, name=f"block_{i}") for i in range(L)]
-        self.cnn = hk.Sequential(layers)
-        self.rnn = hk.DeepRNN(layers)
-
-    def __call__(self, u, state=None, **kwargs):
-        if state is None:
-            return self.cnn(u)
-        else:
-            return hk.dynamic_unroll(self.rnn, u, state, **kwargs)
+from s4d import DeepS4DNN, S4DEncoder
 
 
 @hk.without_apply_rng
 @hk.transform
-def model(u, state=None, **kwargs):
+def model(u, training=True, state=None):
     A, L, H = 4, 12, 256  # electra-small-discriminator configuration
-    return S4DMLM(A, L, H)(u, state, **kwargs)
+    backbone = DeepS4DNN([S4DEncoder(H, A) for _ in range(L)])
+    if training:
+        y = backbone(u)
+    else:
+        state = backbone.initial_state(u.shape[0])
+        y, state = hk.dynamic_unroll(backbone, u, state, time_major=False)
+    return y if state is None else (y, state)
 
 
-u = jnp.zeros((1, 512, 256))  # (B, N, D)
-params = model.init(PRNGKey(42), u)
+rngs = hk.PRNGSequence(42)
+inputs = jax.random.normal(next(rngs), [1, 512, 256])  # (B, N, D)
+params = model.init(next(rngs), inputs)
 print(f"{hk.data_structures.tree_size(params) / 1e6:.3g}M parameters")
-y = model.apply(params, u)  # apply convolutional parametrization
+y_cnn = model.apply(params, inputs)
+y_rnn, _ = model.apply(params, inputs, training=False)
 pass

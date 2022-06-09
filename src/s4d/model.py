@@ -1,20 +1,23 @@
 "dm-haiku port of https://github.com/HazyResearch/state-spaces/blob/main/src/models/sequence/ss/standalone/s4d.py"
-import warnings
-from functools import partial
+from copy import copy
+from functools import partialmethod
+from inspect import signature
 
 import haiku as hk
 import jax
 import jax.numpy as jnp
+import numpy as np
 from einops import rearrange, repeat
 from haiku.initializers import RandomNormal, RandomUniform
 
 
 class S4DCore(hk.RNNCore):
-    def __init__(self, dA, dB, dC, D, name=None):
+    def __init__(self, w, C, D, dt, name=None):
         super().__init__(name=name)
-        self.dA = dA
-        self.dB = dB
-        self.dC = dC
+        dtA = w * dt[..., None]
+        self.dA = jnp.exp(dtA)
+        self.dC = C * (jnp.exp(dtA - 1.0) / w)
+        self.dB = jnp.ones_like(self.dA)
         self.D = D
 
     def initial_state(self, batch_size=None):
@@ -23,8 +26,8 @@ class S4DCore(hk.RNNCore):
 
     def __call__(self, u, state):
         v = jnp.einsum("h n, ... h n -> ... h n", self.dA, state)
-        z = jnp.einsum("h n, ... h -> ... h", self.dB, u)
-        state = v + z[..., None]
+        z = jnp.einsum("h n, ... h -> ... h n", self.dB, u)
+        state = v + z
         y = jnp.einsum("c h n, ... h n -> c h", self.dC, state)
         y = y + u[..., None, :] * self.D
         return 2 * y.real, state
@@ -63,13 +66,18 @@ class S4DConv(hk.Module):
         return rearrange(y, "... c h l -> ... l c h")
 
 
-class S4D(hk.Module):
+def curry(module, *args, **kwargs):
+    module = copy(module)
+    module.__call__ = partialmethod(module, *args, **kwargs)
+    return module
+
+
+class S4D(hk.RNNCore):
     def __init__(
         self, h, n=64, channels=1, dt_min=0.001, dt_max=0.1, n_ssm=1, name=None
     ):
         super().__init__(name=name)
-        if not (n_ssm % h == 0 and n_ssm // h > 0):
-            warnings.warn("n_ssm should divide h")
+        assert n_ssm % h == 0 and n_ssm // h > 0, "n_ssm should divide h"
         self.channels = channels
         self.D = hk.get_parameter("D", (self.channels, h), init=RandomNormal())
         self.n_ssm = n_ssm
@@ -78,16 +86,24 @@ class S4D(hk.Module):
         self.h = h
         self.n = n
 
-    @hk.transparent
-    def _w(self):
-        h, n = self.n_ssm, self.n
-        real = 0.5 * jnp.ones((h, n // 2))
-        imag = repeat(jnp.arange(n // 2), "n -> h n", h=h)
+    @staticmethod
+    def _w_init(shape, dtype):
+        assert jnp.issubdtype(dtype, jnp.complexfloating)
+        h, n = shape
+        real = 0.5 * jnp.ones((h, n))
+        imag = repeat(jnp.arange(n), "n -> h n", h=h)
         imag = (
             1 / jnp.pi * n * (n / (1 + 2 * imag) - 1)
         )  # based on asymptotics of default HiPPO matrix
         w = -real + 1j * imag
-        return repeat(w, "t n -> (v t) n", v=h // w.shape[0])
+        w = repeat(w, "t n -> (v t) n", v=h // w.shape[0])
+        return w.astype(dtype)
+
+    @hk.transparent
+    def _w(self):
+        return hk.get_parameter(
+            "w", [self.n_ssm, self.n // 2], dtype=jnp.complex64, init=self._w_init
+        )
 
     @hk.transparent
     def _B(self):
@@ -128,15 +144,13 @@ class S4D(hk.Module):
         return jnp.exp(log_dt) * timescale
 
     def rnn(self, timescale=1.0):
-        dtA = self._w() * self._dt(timescale)[..., None]
-        dA = jnp.exp(dtA)
-        dC = self._C() * (jnp.exp(dtA - 1.0) / self._w())
-        dB = jnp.ones((self.h, self.n // 2))
-
-        return S4DCore(dA, dB, dC, self.D)
+        return S4DCore(self._w(), self._C(), self.D, self._dt(timescale))
 
     def cnn(self, timescale=1.0):
         return S4DConv(self._w(), self._C(), self.D, self._dt(timescale), self.channels)
+
+    def initial_state(self, batch_size=None):
+        return self.rnn().initial_state(batch_size)
 
     def __call__(self, u, timescale=1.0, state=None):
         if state is None:
@@ -145,20 +159,25 @@ class S4D(hk.Module):
             return self.rnn(timescale)(u, state)
 
 
-class DeepS4DNN(hk.Module):
+class DeepS4DNN(hk.RNNCore):
     def __init__(self, layers, name=None):
         super().__init__(name=name)
         self.layers = layers
 
+    def _with_timescale(self, timescale=1.0):
+        layers = []
+        for layer in self.layers:
+            if "timescale" in signature(layer).parameters:
+                layers.append(curry(layer, timescale=timescale))
+            else:
+                layers.append(layer)
+        return layers
+
     def rnn(self, timescale=1.0):
-        return hk.DeepRNN(
-            [partial(layer, timescale=timescale) for layer in self.layers]
-        )
+        return hk.DeepRNN(self._with_timescale(timescale))
 
     def cnn(self, timescale=1.0):
-        return hk.Sequential(
-            [partial(layer, timescale=timescale) for layer in self.layers]
-        )
+        return hk.Sequential(self._with_timescale(timescale))
 
     def initial_state(self, batch_size=None):
         return self.rnn().initial_state(batch_size)
@@ -186,7 +205,7 @@ class S4DEncoder(hk.RNNCore):
         self.act = activation
 
     def initial_state(self, batch_size=None):
-        return self.s4d.rnn().initial_state(batch_size)
+        return self.s4d.initial_state(batch_size)
 
     def __call__(self, u, state=None, timescale=1.0, dropout=None):
         if state is None:
