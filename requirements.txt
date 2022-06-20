@@ -1,6 +1,1 @@
-dm-haiku
-black
-einops
-jax
-numpy
--e .
+.
