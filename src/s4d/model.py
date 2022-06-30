@@ -200,22 +200,19 @@ class S4DEncoder(hk.RNNCore):
         super().__init__(name=name)
         H, A = hidden_dim, num_heads
         self.s4d = S4D(H, n_ssm=H, channels=A)
-        self.nrm = hk.LayerNorm(-1, True, True)
+        self.nrm = hk.LayerNorm(-1, True, False)
         self.ffn = hk.nets.MLP([H * A, H], activation=activation)
         self.act = activation
 
     def initial_state(self, batch_size=None):
         return self.s4d.initial_state(batch_size)
 
-    def __call__(self, u, state=None, timescale=1.0, dropout=None):
+    def __call__(self, u, state=None, timescale=1.0):
+        u = self.nrm(u)
         if state is None:
             v = self.s4d.cnn(timescale)(u)
         else:
             v, state = self.s4d.rnn(timescale)(u, state)
-
-        if dropout is not None:
-            v = hk.dropout(hk.next_rng_key(), dropout, v)
-        u = rearrange(u, "... d -> ... () d")
-        v = self.nrm(rearrange(u + v, "... h d -> ... (h d)"))
-        y = self.act(self.ffn(v, dropout, dropout and hk.maybe_next_rng_key()))
+        v = rearrange(v, "... h d -> ... (h d)")
+        y = self.act(u + self.ffn(self.act(v)))
         return y if state is None else (y, state)
