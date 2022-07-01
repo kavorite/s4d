@@ -62,7 +62,7 @@ class S4DConv(hk.Module):
         k = self._kernel(l=l)
         if self.bidirectional:
             k0, k1 = rearrange(k, "(s c) h l -> s c h l", s=2)
-            k = jnp.concatenate([k0, k1[..., ::-1]], axis=-1)
+            k = jnp.concatenate([k0, k1[..., ::-1]])
         k_f = jnp.fft.rfft(k, n=2 * l - 1)
         u_f = jnp.fft.rfft(u, n=2 * l - 1)
         y_f = jnp.einsum("... h l, c h l -> ... c h l", u_f, k_f)
@@ -87,12 +87,14 @@ class S4D(hk.RNNCore):
         dt_min=0.001,
         dt_max=0.1,
         n_ssm=1,
+        activation=jax.nn.silu,
         name=None,
     ):
         super().__init__(name=name)
         assert n_ssm % h == 0 and n_ssm // h > 0, "n_ssm should divide h"
         if bidirectional:
             assert channels % 2 == 0, "if bidirectional, channels should divide 2"
+        self.activation = activation
         self.channels = channels
         self.bidirectional = bidirectional
         self.D = hk.get_parameter("D", (self.channels, h), init=RandomNormal())
@@ -177,9 +179,10 @@ class S4D(hk.RNNCore):
 
     def __call__(self, u, timescale=1.0, state=None):
         if state is None:
-            return self.cnn(timescale)(u)
+            y = self.cnn(timescale)(u)
         else:
-            return self.rnn(timescale)(u, state)
+            y = self.rnn(timescale)(u, state)
+        return hk.Linear(self.h)(y)
 
 
 class DeepS4DNN(hk.RNNCore):
