@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 from einops import rearrange, repeat
 from haiku.initializers import RandomNormal, RandomUniform
+from transformers import BigBirdForSequenceClassification
 
 
 class S4DCore(hk.RNNCore):
@@ -34,13 +35,14 @@ class S4DCore(hk.RNNCore):
 
 
 class S4DConv(hk.Module):
-    def __init__(self, w, C, D, dt, channels, name=None):
+    def __init__(self, w, C, D, dt, channels, bidirectional=False, name=None):
         super().__init__(name=name)
         self.w = w
         self.C = C
         self.D = D
         self.dt = dt
         self.channels = channels
+        self.bidirectional = bidirectional
 
     def _kernel(self, l=1):
         h = self.dt.shape[-1]
@@ -58,6 +60,9 @@ class S4DConv(hk.Module):
         u = u.swapaxes(-1, -2)
         l = u.shape[-1]
         k = self._kernel(l=l)
+        if self.bidirectional:
+            k0, k1 = rearrange(k, "(s c) h l -> s c h l", s=2)
+            k = jnp.concatenate([k0, k1[..., ::-1]], axis=-1)
         k_f = jnp.fft.rfft(k, n=2 * l - 1)
         u_f = jnp.fft.rfft(u, n=2 * l - 1)
         y_f = jnp.einsum("... h l, c h l -> ... c h l", u_f, k_f)
@@ -74,11 +79,22 @@ def curry(module, *args, **kwargs):
 
 class S4D(hk.RNNCore):
     def __init__(
-        self, h, n=64, channels=1, dt_min=0.001, dt_max=0.1, n_ssm=1, name=None
+        self,
+        h,
+        n=64,
+        channels=1,
+        bidirectional=False,
+        dt_min=0.001,
+        dt_max=0.1,
+        n_ssm=1,
+        name=None,
     ):
         super().__init__(name=name)
         assert n_ssm % h == 0 and n_ssm // h > 0, "n_ssm should divide h"
+        if bidirectional:
+            assert channels % 2 == 0, "if bidirectional, channels should divide 2"
         self.channels = channels
+        self.bidirectional = bidirectional
         self.D = hk.get_parameter("D", (self.channels, h), init=RandomNormal())
         self.n_ssm = n_ssm
         self.dt_min = dt_min
@@ -147,7 +163,14 @@ class S4D(hk.RNNCore):
         return S4DCore(self._w(), self._C(), self.D, self._dt(timescale))
 
     def cnn(self, timescale=1.0):
-        return S4DConv(self._w(), self._C(), self.D, self._dt(timescale), self.channels)
+        return S4DConv(
+            self._w(),
+            self._C(),
+            self.D,
+            self._dt(timescale),
+            self.channels,
+            bidirectional=self.bidirectional,
+        )
 
     def initial_state(self, batch_size=None):
         return self.rnn().initial_state(batch_size)
@@ -195,11 +218,12 @@ class S4DEncoder(hk.RNNCore):
         hidden_dim,
         num_heads,
         activation=jax.nn.silu,
+        bidirectional=False,
         name=None,
     ):
         super().__init__(name=name)
         H, A = hidden_dim, num_heads
-        self.s4d = S4D(H, n_ssm=H, channels=A)
+        self.s4d = S4D(H, n_ssm=H, channels=A, bidirectional=bidirectional)
         self.nrm = hk.LayerNorm(-1, True, False)
         self.ffn = hk.nets.MLP([H * A, H], activation=activation)
         self.act = activation
