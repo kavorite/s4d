@@ -222,13 +222,14 @@ class S4DEncoder(hk.RNNCore):
         num_heads,
         activation=jax.nn.silu,
         bidirectional=False,
+        expand_factor=4,
         name=None,
     ):
         super().__init__(name=name)
         H, A = hidden_dim, num_heads
         self.s4d = S4D(H, n_ssm=H, channels=A, bidirectional=bidirectional)
         self.nrm = hk.LayerNorm(-1, True, False)
-        self.ffn = hk.nets.MLP([H * A, H], activation=activation)
+        self.ffn = hk.nets.MLP([H * expand_factor, H], activation=activation)
         self.act = activation
 
     def initial_state(self, batch_size=None):
