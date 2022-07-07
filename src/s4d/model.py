@@ -9,7 +9,6 @@ import jax.numpy as jnp
 import numpy as np
 from einops import rearrange, repeat
 from haiku.initializers import RandomNormal, RandomUniform
-from transformers import BigBirdForSequenceClassification
 
 
 class S4DCore(hk.RNNCore):
@@ -223,12 +222,16 @@ class S4DEncoder(hk.RNNCore):
         activation=jax.nn.silu,
         bidirectional=False,
         expand_factor=4,
+        norm=True,
         name=None,
     ):
         super().__init__(name=name)
         H, A = hidden_dim, num_heads
         self.s4d = S4D(H, n_ssm=H, channels=A, bidirectional=bidirectional)
-        self.nrm = hk.LayerNorm(-1, True, False)
+        if norm:
+            self.nrm = hk.LayerNorm(-1, True, False)
+        else:
+            self.nrm = lambda x: x
         self.ffn = hk.nets.MLP([H * expand_factor, H], activation=activation)
         self.act = activation
 
