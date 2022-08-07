@@ -18,7 +18,6 @@ TODO(kavorite): implement multi-scale hierarchical architecture
 
 import haiku as hk
 import jax
-import jax.numpy as jnp
 from s4d import DeepS4DNN, S4DEncoder
 
 

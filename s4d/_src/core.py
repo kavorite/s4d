@@ -1,17 +1,12 @@
 "dm-haiku port of https://github.com/HazyResearch/state-spaces/blob/main/src/models/sequence/ss/standalone/s4d.py"
-from copy import copy
-from functools import partialmethod
-from inspect import signature
-
 import haiku as hk
 import jax
 import jax.numpy as jnp
-import numpy as np
 from einops import rearrange, repeat
 from haiku.initializers import RandomNormal, RandomUniform
 
 
-class S4DCore(hk.RNNCore):
+class S4DCell(hk.RNNCore):
     def __init__(self, w, C, D, dt, name=None):
         super().__init__(name=name)
         dtA = w * dt[..., None]
@@ -68,12 +63,6 @@ class S4DConv(hk.Module):
         y = jnp.fft.irfft(y_f, n=2 * l)[..., :l]
         y = y + jnp.einsum("... h l, c h -> ... c h l", u, self.D)
         return rearrange(y, "... c h l -> ... l c h")
-
-
-def curry(module, *args, **kwargs):
-    module = copy(module)
-    module.__call__ = partialmethod(module, *args, **kwargs)
-    return module
 
 
 class S4D(hk.RNNCore):
@@ -161,7 +150,7 @@ class S4D(hk.RNNCore):
         return jnp.exp(log_dt) * timescale
 
     def rnn(self, timescale=1.0):
-        return S4DCore(self._w(), self._C(), self.D, self._dt(timescale))
+        return S4DCell(self._w(), self._C(), self.D, self._dt(timescale))
 
     def cnn(self, timescale=1.0):
         return S4DConv(
@@ -184,66 +173,11 @@ class S4D(hk.RNNCore):
         return hk.Linear(self.h)(y)
 
 
-class DeepS4DNN(hk.RNNCore):
-    def __init__(self, layers, name=None):
-        super().__init__(name=name)
-        self.layers = layers
-
-    def _with_timescale(self, timescale=1.0):
-        layers = []
-        for layer in self.layers:
-            if "timescale" in signature(layer).parameters:
-                layers.append(curry(layer, timescale=timescale))
-            else:
-                layers.append(layer)
-        return layers
-
-    def rnn(self, timescale=1.0):
-        return hk.DeepRNN(self._with_timescale(timescale))
-
-    def cnn(self, timescale=1.0):
-        return hk.Sequential(self._with_timescale(timescale))
-
-    def initial_state(self, batch_size=None):
-        return self.rnn().initial_state(batch_size)
-
-    def __call__(self, u, state=None, timescale=1.0):
-        if state is not None:
-            return self.rnn(timescale)(u, state)
+def inject_timescale(timescale):
+    def interceptor(f, args, kwargs, context):
+        if isinstance(context.module, S4D) and context.method_name in ("rnn", "cnn"):
+            return f(timescale)
         else:
-            return self.cnn(timescale)(u)
+            return f(*args, **kwargs)
 
-
-class S4DEncoder(hk.RNNCore):
-    def __init__(
-        self,
-        hidden_dim,
-        num_heads,
-        activation=jax.nn.silu,
-        bidirectional=False,
-        expand_factor=4,
-        norm=True,
-        name=None,
-    ):
-        super().__init__(name=name)
-        H, A = hidden_dim, num_heads
-        self.s4d = S4D(H, n_ssm=H, channels=A, bidirectional=bidirectional)
-        if norm:
-            self.nrm = hk.LayerNorm(-1, True, False)
-        else:
-            self.nrm = lambda x: x
-        self.ffn = hk.nets.MLP([H * expand_factor, H], activation=activation)
-        self.act = activation
-
-    def initial_state(self, batch_size=None):
-        return self.s4d.initial_state(batch_size)
-
-    def __call__(self, u, state=None, timescale=1.0):
-        u = self.nrm(u)
-        if state is None:
-            v = self.s4d.cnn(timescale)(u)
-        else:
-            v, state = self.s4d.rnn(timescale)(u, state)
-        v = rearrange(v, "... h d -> ... (h d)")
-        y = self.act(u + self.ffn(self.act(v)))
-        return y if state is None else (y, state)
+    return hk.intercept_methods(interceptor)
